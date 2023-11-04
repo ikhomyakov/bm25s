@@ -197,7 +197,7 @@ class BM25S:
                 c.execute("select * from q where did = ?", (qid,))
                 ds = c.fetchall()
                 c.close()
-        return detuple(ds)
+        return detuple(ds)[0]
 
     def bm25_by_qid(self, qid: int, k: int):
         with sqlite3.connect(self.db_path) as conn:
@@ -215,7 +215,32 @@ class BM25S:
                 )
                 ds = c.fetchall()
                 c.close()
-        return dict(ds=detuple(ds), q=self.retrieve_query(qid))
+
+        d = dict(ds=detuple(ds), q=self.retrieve_query(qid))
+
+        pos_did = d["q"][2]
+        neg_did = d["q"][3]
+        pos_rr = 0.0
+        neg_rr = 0.0
+        pos_rank = 0
+        neg_rank = 0
+
+        for i, x in enumerate(d["ds"], start=1):
+            did = x[0]
+            if did == pos_did:
+                pos_rank = i
+                pos_rr = 1.0 / pos_rank
+            if did == neg_did:
+                neg_rank = i
+                neg_rr = 1.0 / neg_rank
+
+        d["k"] = k
+        d["pos_rank"] = pos_rank
+        d["neg_rank"] = neg_rank
+        d["pos_rr"] = pos_rr
+        d["neg_rr"] = neg_rr
+
+        return d
 
 
 def detuple(xs: list[tuple]) -> list[list]:
@@ -247,7 +272,7 @@ def main() -> None:
     db_path = sys.argv[1]
     tsv_path = sys.argv[2]
     start_line_id = int(sys.argv[3])
-    qid = int(sys.argv[4])
+    last_qid = int(sys.argv[4])
 
     logging.info(f"Initializing bm25s model with {LANGUAGE_MODEL_NAME!r}...")
     tokenizer = transformers.AutoTokenizer.from_pretrained(LANGUAGE_MODEL_NAME)
@@ -266,14 +291,22 @@ def main() -> None:
         device=DEVICE,
     )
 
-    logging.info(f"Ingesting corpus {tsv_path=}...")
-    bm.ingest_corpus(tsv_path, start_line_id)
+    # logging.info(f"Ingesting corpus {tsv_path=}...")
+    # bm.ingest_corpus(tsv_path, start_line_id)
 
     k = 10
-    logging.info(f"Running bm25s for {qid=}, {k=}...")
-    d = bm.bm25_by_qid(qid, k)
-    print(len(d))
-    yaml.dump(d, sys.stdout, indent=4)
+    logging.info(f"Running bm25s for 1..{last_qid}, {k=}...")
+    pos_mrr_sum = 0.0
+    neg_mrr_sum = 0.0
+    cnt = 0
+    for qid in (pbar := tqdm.trange(1, last_qid + 1)):
+        d = bm.bm25_by_qid(qid, k)
+        cnt += 1
+        pos_mrr_sum += d["pos_rr"]
+        neg_mrr_sum += d["neg_rr"]
+        pos_mrr = pos_mrr_sum / cnt
+        neg_mrr = neg_mrr_sum / cnt
+        pbar.set_description(f"+{pos_mrr} -{neg_mrr}")
 
 
 if __name__ == "__main__":
