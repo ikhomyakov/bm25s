@@ -1,13 +1,21 @@
-import json
 import logging
 import sqlite3
 import sys
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import tqdm
 import transformers
-import yaml
+
+RANDOM_SEED = 100
+DEVICE = "cpu"
+EMBEDDING_SIZE = 768
+MAX_TEXT_LENGTH = 2048
+LANGUAGE_MODEL_NAME = "bert-base-cased"
+K1 = 1.2
+B = 0.75
+K = 10
 
 
 class LSH:
@@ -16,6 +24,7 @@ class LSH:
     Sensitive Hashing (LSH) - Cosine Distance,
      http://ethen8181.github.io/machine-learning/recsys/content_based/lsh_text.html
     """
+
     def __init__(self, dim, n_vectors: int = 16) -> None:
         self.random_vectors = np.random.randn(dim, n_vectors)
         self.powers_of_two = 1 << np.arange(n_vectors - 1, -1, step=-1)
@@ -29,12 +38,12 @@ class BM25S:
         self,
         language_model,
         tokenizer,
-        db_path,
-        k1=1.2,
-        b=0.75,
-        embedding_size=768,
-        max_text_length=512,
-        device="cpu",
+        db_path: str,
+        k1: float = 1.2,
+        b: float = 0.75,
+        embedding_size: int = 768,
+        max_text_length: int = 512,
+        device: str = "cpu",
     ):
         self.language_model = language_model
         self.tokenizer = tokenizer
@@ -55,7 +64,7 @@ class BM25S:
             max_length=self.max_text_length,
         ).to(self.device)
 
-    def create_tables(self, conn):
+    def create_tables(self, conn) -> None:
         conn.execute("create table m(n, avgdl, k1, b)")
         conn.execute(
             "create table d(did primary key, text, dl)"
@@ -74,7 +83,7 @@ class BM25S:
             "create table tf(tid, did references d(did), tf, primary key (tid, did))"
         )
 
-    def upsert_t(self, conn, inputs, table="t"):
+    def upsert_t(self, conn, inputs, table_name: str = "t") -> None:
         if isinstance(inputs, transformers.tokenization_utils_base.BatchEncoding):
             tids = inputs["input_ids"][0][1:-1].tolist()
             tokens = self.tokens_to_text(inputs)
@@ -88,12 +97,12 @@ class BM25S:
 
         for tid, token in Counter(zip(tids, tokens)):
             conn.execute(
-                f"insert into {table}(tid, token, nw) values(?, ?, ?)"
+                f"insert into {table_name}(tid, token, nw) values(?, ?, ?)"
                 " on conflict(tid) do update set nw = nw + 1",
                 (tid, token, 1),
             )
 
-    def insert_tf(self, conn, did, inputs, table="tf"):
+    def insert_tf(self, conn, did, inputs, table_name: str = "tf") -> None:
         if isinstance(inputs, transformers.tokenization_utils_base.BatchEncoding):
             tids = inputs["input_ids"][0][1:-1].tolist()
         elif isinstance(inputs, list):
@@ -103,23 +112,24 @@ class BM25S:
 
         for tid, tf in Counter(tids).items():
             conn.execute(
-                f"insert into {table}(tid, did, tf) values(?, ?, ?)", (tid, did, tf)
+                f"insert into {table_name}(tid, did, tf) values(?, ?, ?)",
+                (tid, did, tf),
             )
 
-    def upsert_meta(self, conn):
+    def upsert_meta(self, conn) -> None:
         conn.execute("delete from m")
         conn.execute(
             "insert into m(n, avgdl, k1, b) select count(*), avg(dl), ?, ? from d",
             (self.k1, self.b),
         )
 
-    def insert_q(self, conn, qid, q, pos_did, neg_did):
+    def insert_q(self, conn, qid, q, pos_did, neg_did) -> None:
         conn.execute(
             "insert into q(did, text, pos_did, neg_did) values(?, ?, ?, ?)",
             (qid, q, pos_did, neg_did),
         )
 
-    def insert_d(self, conn, did, d, dt):
+    def insert_d(self, conn, did, d, dt) -> None:
         conn.execute(
             "insert into d(did, text, dl) values(?, ?, ?)",
             (did, d, len(dt["input_ids"][0][1:-1])),
@@ -128,7 +138,7 @@ class BM25S:
     def tokens_to_text(self, inputs):
         return self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0][1:-1])
 
-    def infer(self, text):
+    def infer(self, text: str):
         inputs = self.tokenize(text, padding=True, truncation=True)
         try:
             outputs = self.language_model(**inputs)
@@ -139,7 +149,7 @@ class BM25S:
             v = None
         return v[0]
 
-    def semantic_tokenize(self, text):
+    def semantic_tokenize(self, text: str) -> list[int]:
         v = self.infer(text)[1:-1]
         s = (-self.lsh.hash(v.numpy())).tolist()
         return s
@@ -169,28 +179,28 @@ class BM25S:
                         self.insert_d(conn, pos_did, dp, dpt)
                         self.insert_d(conn, neg_did, dn, dnt)
 
-                        self.upsert_t(conn, qt, table="qt")
-                        self.upsert_t(conn, dpt, table="t")
-                        self.upsert_t(conn, dnt, table="t")
+                        self.upsert_t(conn, qt, "qt")
+                        self.upsert_t(conn, dpt, "t")
+                        self.upsert_t(conn, dnt, "t")
 
-                        self.insert_tf(conn, qid, qt, table="qtf")
-                        self.insert_tf(conn, pos_did, dpt, table="tf")
-                        self.insert_tf(conn, neg_did, dnt, table="tf")
+                        self.insert_tf(conn, qid, qt, "qtf")
+                        self.insert_tf(conn, pos_did, dpt, "tf")
+                        self.insert_tf(conn, neg_did, dnt, "tf")
 
-                        self.upsert_t(conn, qs, table="qt")
-                        self.upsert_t(conn, dps, table="t")
-                        self.upsert_t(conn, dns, table="t")
+                        self.upsert_t(conn, qs, "qt")
+                        self.upsert_t(conn, dps, "t")
+                        self.upsert_t(conn, dns, "t")
 
-                        self.insert_tf(conn, qid, qs, table="qtf")
-                        self.insert_tf(conn, pos_did, dps, table="tf")
-                        self.insert_tf(conn, neg_did, dns, table="tf")
+                        self.insert_tf(conn, qid, qs, "qtf")
+                        self.insert_tf(conn, pos_did, dps, "tf")
+                        self.insert_tf(conn, neg_did, dns, "tf")
 
                         line_id += 1
 
             self.upsert_meta(conn)
         return line_id - start_line_id
 
-    def retrieve_query(self, qid: int):
+    def retrieve_query(self, qid: int) -> list:
         with sqlite3.connect(self.db_path) as conn:
             with conn:
                 c = conn.cursor()
@@ -199,7 +209,7 @@ class BM25S:
                 c.close()
         return detuple(ds)[0]
 
-    def bm25_by_qid(self, qid: int, k: int):
+    def bm25_by_qid(self, qid: int, k: int) -> dict:
         with sqlite3.connect(self.db_path) as conn:
             with conn:
                 c = conn.cursor()
@@ -207,16 +217,29 @@ class BM25S:
                     """
                     with b as (
                        select tf.did, tf.tid,
-                           tf.tf * (1 + m.k1) / (tf.tf + m.k1 * (1 - m.b + m.b * d.dl / m.avgdl)) * ln((m.n - t.nw + 0.5) / (t.nw + 0.5)) bm25
-                       from qtf join t using (tid) join tf using(tid) join d using(did) join m where qtf.did in (?)
-                    ) select did, sum(bm25), text from b join d using (did) where bm25 > 0 group by did order by 2 desc limit (?);
+                           tf.tf * (1 + m.k1)
+                           / (tf.tf + m.k1 * (1 - m.b + m.b * d.dl / m.avgdl))
+                           * ln((m.n - t.nw + 0.5) / (t.nw + 0.5)) bm25
+                           from qtf
+                               join t using (tid)
+                               join tf using(tid)
+                               join d using(did)
+                               join m
+                           where qtf.did in (?)
+                    )
+                    select did, sum(bm25), text
+                        from b join d using (did)
+                        where bm25 > 0
+                        group by did
+                        order by 2 desc
+                        limit (?);
                     """,
                     (qid, k),
                 )
                 ds = c.fetchall()
                 c.close()
 
-        d = dict(ds=detuple(ds), q=self.retrieve_query(qid))
+        d: dict = dict(ds=detuple(ds), q=self.retrieve_query(qid))
 
         pos_did = d["q"][2]
         neg_did = d["q"][3]
@@ -262,23 +285,23 @@ def setup_logging(log_level: str) -> None:
 def main() -> None:
     setup_logging("debug")
 
-    DEVICE = "cpu"
-    EMBEDDING_SIZE = 768
-    MAX_TEXT_LENGTH = 2048
-    LANGUAGE_MODEL_NAME = "bert-base-cased"
-    K1 = 1.2
-    B = 0.75
-
     db_path = sys.argv[1]
     tsv_path = sys.argv[2]
     start_line_id = int(sys.argv[3])
     last_qid = int(sys.argv[4])
 
-    logging.info(f"Initializing bm25s model with {LANGUAGE_MODEL_NAME!r}...")
+    ingest_flag = not Path(db_path).exists()
+
+    np.random.seed(RANDOM_SEED)
+
+    logging.info(f"Initializing bm25s model with LLM {LANGUAGE_MODEL_NAME!r}...")
     tokenizer = transformers.AutoTokenizer.from_pretrained(LANGUAGE_MODEL_NAME)
-    language_model = transformers.AutoModel.from_pretrained(LANGUAGE_MODEL_NAME).to(
-        DEVICE
-    )
+    if ingest_flag:
+        language_model = transformers.AutoModel.from_pretrained(LANGUAGE_MODEL_NAME).to(
+            DEVICE
+        )
+    else:
+        language_model = None
 
     bm = BM25S(
         language_model,
@@ -291,22 +314,24 @@ def main() -> None:
         device=DEVICE,
     )
 
-    # logging.info(f"Ingesting corpus {tsv_path=}...")
-    # bm.ingest_corpus(tsv_path, start_line_id)
+    if ingest_flag:
+        logging.info(
+            f"Ingesting corpus {tsv_path=}, {start_line_id=} into {db_path=}..."
+        )
+        bm.ingest_corpus(tsv_path, start_line_id)
 
-    k = 10
-    logging.info(f"Running bm25s for 1..{last_qid}, {k=}...")
+    logging.info(f"Running bm25s for 1..{last_qid}, {K=}...")
     pos_mrr_sum = 0.0
     neg_mrr_sum = 0.0
     cnt = 0
     for qid in (pbar := tqdm.trange(1, last_qid + 1)):
-        d = bm.bm25_by_qid(qid, k)
+        d = bm.bm25_by_qid(qid, K)
         cnt += 1
         pos_mrr_sum += d["pos_rr"]
         neg_mrr_sum += d["neg_rr"]
         pos_mrr = pos_mrr_sum / cnt
         neg_mrr = neg_mrr_sum / cnt
-        pbar.set_description(f"+{pos_mrr} -{neg_mrr}")
+        pbar.set_description(f"+{pos_mrr:9.9f} -{neg_mrr:9.7f}")
 
 
 if __name__ == "__main__":

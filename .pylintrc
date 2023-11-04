@@ -1,0 +1,9 @@
+[MESSAGES CONTROL]
+disable=
+    use-dict-literal,
+    logging-fstring-interpolation,
+    broad-exception-caught,
+    use-implicit-booleaness-not-comparison,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
