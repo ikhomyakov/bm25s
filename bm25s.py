@@ -4,9 +4,7 @@ import sqlite3
 import sys
 from collections import Counter
 
-import datasets
 import numpy as np
-import torch
 import tqdm
 import transformers
 import yaml
