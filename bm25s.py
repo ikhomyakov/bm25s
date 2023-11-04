@@ -11,6 +11,11 @@ import yaml
 
 
 class LSH:
+    """Implements locality sensitive hashing (cosine distance)
+    Derived from: MingYu (Ethen) Liu (@ethen8181), Locality
+    Sensitive Hashing (LSH) - Cosine Distance,
+     http://ethen8181.github.io/machine-learning/recsys/content_based/lsh_text.html
+    """
     def __init__(self, dim, n_vectors: int = 16) -> None:
         self.random_vectors = np.random.randn(dim, n_vectors)
         self.powers_of_two = 1 << np.arange(n_vectors - 1, -1, step=-1)
