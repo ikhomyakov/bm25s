@@ -41,6 +41,7 @@ class BM25S:
         db_path: str,
         k1: float = 1.2,
         b: float = 0.75,
+        s: float = 0.5,
         embedding_size: int = 768,
         max_text_length: int = 512,
         device: str = "cpu",
@@ -50,6 +51,7 @@ class BM25S:
         self.db_path = db_path
         self.k1 = k1
         self.b = b
+        self.s = s
         self.embedding_size = embedding_size
         self.max_text_length = max_text_length
         self.device = device
@@ -65,7 +67,7 @@ class BM25S:
         ).to(self.device)
 
     def create_tables(self, conn) -> None:
-        conn.execute("create table m(n, avgdl, k1, b)")
+        conn.execute("create table m(n, avgdl, k1, b, s)")
         conn.execute(
             "create table d(did primary key, text, dl)"
         )  # did > 0: pos docs, did < 0: neg docs
@@ -119,8 +121,8 @@ class BM25S:
     def upsert_meta(self, conn) -> None:
         conn.execute("delete from m")
         conn.execute(
-            "insert into m(n, avgdl, k1, b) select count(*), avg(dl), ?, ? from d",
-            (self.k1, self.b),
+            "insert into m(n, avgdl, k1, b, s) select count(*), avg(dl), ?, ?, ? from d",
+            (self.k1, self.b, self.s),
         )
 
     def insert_q(self, conn, qid, q, pos_did, neg_did) -> None:
@@ -217,7 +219,8 @@ class BM25S:
                     """
                     with b as (
                        select tf.did, tf.tid,
-                           tf.tf * (1 + m.k1)
+                           2.0 * case sign(tf.tid) when 1 then 1.0 - m.s else m.s end
+                           * tf.tf * (1 + m.k1)
                            / (tf.tf + m.k1 * (1 - m.b + m.b * d.dl / m.avgdl))
                            * ln((m.n - t.nw + 0.5) / (t.nw + 0.5)) bm25
                            from qtf
