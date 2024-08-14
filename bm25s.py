@@ -211,7 +211,7 @@ class BM25S:
                 c.close()
         return detuple(ds)[0]
 
-    def bm25_by_qid(self, qid: int, k: int) -> dict:
+    def bm25s_by_qid(self, qid: int, k: int) -> dict:
         with sqlite3.connect(self.db_path) as conn:
             with conn:
                 c = conn.cursor()
@@ -222,7 +222,7 @@ class BM25S:
                            2.0 * case sign(tf.tid) when 1 then 1.0 - m.s else m.s end
                            * tf.tf * (1 + m.k1)
                            / (tf.tf + m.k1 * (1 - m.b + m.b * d.dl / m.avgdl))
-                           * ln((m.n - t.nw + 0.5) / (t.nw + 0.5)) bm25
+                           * ln((m.n - t.nw + 0.5) / (t.nw + 0.5)) bm25s
                            from qtf
                                join t using (tid)
                                join tf using(tid)
@@ -230,9 +230,9 @@ class BM25S:
                                join m
                            where qtf.did in (?)
                     )
-                    select did, sum(bm25), text
+                    select did, sum(bm25s), text
                         from b join d using (did)
-                        where bm25 > 0
+                        where bm25s > 0
                         group by did
                         order by 2 desc
                         limit (?);
@@ -328,7 +328,7 @@ def main() -> None:
     neg_mrr_sum = 0.0
     cnt = 0
     for qid in (pbar := tqdm.trange(1, last_qid + 1)):
-        d = bm.bm25_by_qid(qid, K)
+        d = bm.bm25s_by_qid(qid, K)
         cnt += 1
         pos_mrr_sum += d["pos_rr"]
         neg_mrr_sum += d["neg_rr"]
